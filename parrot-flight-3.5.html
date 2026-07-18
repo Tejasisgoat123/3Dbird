@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Parrot Flight 3D</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            overflow: hidden; 
+            background: #1a1a2e; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+        }
+        #game-container { 
+            position: relative; 
+            width: 100vw; 
+            height: 100vh; 
+        }
+        #ui-layer { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            pointer-events: none; 
+            z-index: 10; 
+        }
+        #score-display { 
+            position: absolute; 
+            top: 20px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            color: #fff; 
+            font-size: 48px; 
+            font-weight: bold; 
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            transition: transform 0.15s ease;
+        }
+        #start-screen, #game-over-screen { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            background: rgba(0,0,0,0.7); 
+            pointer-events: auto; 
+        }
+        .btn { 
+            padding: 15px 40px; 
+            font-size: 24px; 
+            background: #e94560; 
+            color: white; 
+            border: none; 
+            border-radius: 30px; 
+            cursor: pointer; 
+            margin-top: 20px; 
+            transition: transform 0.2s, background 0.2s;
+            font-family: inherit;
+        }
+        .btn:hover { 
+            transform: scale(1.1); 
+            background: #ff6b6b;
+        }
+        .btn:active { transform: scale(0.95); }
+        #game-over-screen { display: none; }
+        #final-score { color: #fff; font-size: 32px; margin-bottom: 10px; }
+        #instructions { color: #ccc; font-size: 18px; margin-top: 10px; text-align: center; line-height: 1.5; }
+        #high-score { color: #ffd700; font-size: 20px; margin-top: 5px; }
+        h1 { color: #e94560; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="ui-layer">
+            <div id="score-display">0</div>
+            <div id="start-screen">
+                <h1 style="font-size: 56px;">Parrot Flight</h1>
+                <p id="instructions">Tap, click, or press Space to fly<br>Navigate through the tunnels!</p>
+                <button class="btn" id="start-btn">Start Flying</button>
+            </div>
+            <div id="game-over-screen">
+                <h1 style="font-size: 48px;">Crashed!</h1>
+                <div id="final-score">Score: 0</div>
+                <div id="high-score">Best: 0</div>
+                <button class="btn" id="restart-btn">Fly Again</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let gameState = 'start';
+        let score = 0;
+        let highScore = parseInt(localStorage.getItem('parrotHighScore') || '0');
+        let speed = 0.12;
+        let gravity = 0.006;
+        let jumpStrength = 0.15;
+        let birdVelocity = 0;
+        let tunnelGap = 3.5;
+        let spawnTimer = 0;
+        let spawnInterval = 100;
+        let tunnels = [];
+        let particles = [];
+
+        const container = document.getElementById('game-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 15, 60);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 0, 10);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 10, 5);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        scene.add(dirLight);
+
+        const groundGeo = new THREE.PlaneGeometry(100, 100);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x2d5016 });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -8;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        function createCloud(x, y, z) {
+            const cloudGroup = new THREE.Group();
+            const geo = new THREE.SphereGeometry(1, 8, 8);
+            const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+            const positions = [[0,0,0],[1,0.2,0],[-1,0.1,0],[0.5,0.5,0],[-0.5,0.4,0]];
+            positions.forEach(pos => {
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(...pos);
+                mesh.scale.setScalar(0.8 + Math.random() * 0.4);
+                cloudGroup.add(mesh);
+            });
+            cloudGroup.position.set(x, y, z);
+            return cloudGroup;
+        }
+
+        for (let i = 0; i < 10; i++) {
+            const cloud = createCloud(
+                (Math.random() - 0.5) * 40,
+                3 + Math.random() * 5,
+                -5 - Math.random() * 20
+            );
+            scene.add(cloud);
+        }
+
+        function createParrot() {
+            const parrot = new THREE.Group();
+
+            const bodyGeo = new THREE.SphereGeometry(0.5, 16, 16);
+            bodyGeo.scale(1, 0.8, 1.3);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0xFF6B35 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.castShadow = true;
+            parrot.add(body);
+
+            const headGeo = new THREE.SphereGeometry(0.35, 16, 16);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xFF8C42 });
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.set(0, 0.4, 0.6);
+            head.castShadow = true;
+            parrot.add(head);
+
+            const beakGeo = new THREE.ConeGeometry(0.1, 0.4, 8);
+            const beakMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+            const beak = new THREE.Mesh(beakGeo, beakMat);
+            beak.rotation.x = Math.PI / 2;
+            beak.position.set(0, 0.35, 1.0);
+            parrot.add(beak);
+
+            const eyeGeo = new THREE.SphereGeometry(0.08, 8, 8);
+            const eyeMat = new THREE.MeshStandardMaterial({ color: 0x000000 });
+            const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+            leftEye.position.set(0.2, 0.5, 0.8);
+            const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+            rightEye.position.set(-0.2, 0.5, 0.8);
+            parrot.add(leftEye);
+            parrot.add(rightEye);
+
+            const wingGeo = new THREE.SphereGeometry(0.4, 8, 8);
+            wingGeo.scale(0.3, 1, 0.6);
+            const wingMat = new THREE.MeshStandardMaterial({ color: 0x2EC4B6 });
+
+            const leftWing = new THREE.Mesh(wingGeo, wingMat);
+            leftWing.position.set(0.55, 0.1, 0);
+            leftWing.name = 'leftWing';
+            parrot.add(leftWing);
+
+            const rightWing = new THREE.Mesh(wingGeo, wingMat);
+            rightWing.position.set(-0.55, 0.1, 0);
+            rightWing.name = 'rightWing';
+            parrot.add(rightWing);
+
+            const tailGeo = new THREE.ConeGeometry(0.3, 0.8, 8);
+            const tailMat = new THREE.MeshStandardMaterial({ color: 0x2EC4B6 });
+            const tail = new THREE.Mesh(tailGeo, tailMat);
+            tail.rotation.x = -Math.PI / 2.5;
+            tail.position.set(0, -0.1, -0.7);
+            parrot.add(tail);
+
+            return parrot;
+        }
+
+        const bird = createParrot();
+        bird.position.set(0, 0, 0);
+        scene.add(bird);
+
+        function createTunnel() {
+            const tunnelGroup = new THREE.Group();
+            const gapCenter = (Math.random() - 0.5) * 2;
+            const gapSize = tunnelGap;
+            const tunnelDepth = 1.5;
+            const tunnelHeight = 12;
+            const tunnelWidth = 2;
+
+            const tunnelMat = new THREE.MeshStandardMaterial({ 
+                color: 0x4a6741,
+                roughness: 0.8,
+                map: createNoiseTexture()
+            });
+
+            const topGeo = new THREE.BoxGeometry(tunnelWidth, tunnelHeight, tunnelDepth);
+            const topPillar = new THREE.Mesh(topGeo, tunnelMat);
+            topPillar.position.set(0, gapCenter + gapSize/2 + tunnelHeight/2, 0);
+            topPillar.castShadow = true;
+            topPillar.receiveShadow = true;
+            tunnelGroup.add(topPillar);
+
+            const bottomPillar = new THREE.Mesh(topGeo, tunnelMat);
+            bottomPillar.position.set(0, gapCenter - gapSize/2 - tunnelHeight/2, 0);
+            bottomPillar.castShadow = true;
+            bottomPillar.receiveShadow = true;
+            tunnelGroup.add(bottomPillar);
+
+            const capGeo = new THREE.BoxGeometry(tunnelWidth + 0.4, 0.5, tunnelDepth + 0.4);
+            const capMat = new THREE.MeshStandardMaterial({ color: 0x3d5c3d });
+            const topCap = new THREE.Mesh(capGeo, capMat);
+            topCap.position.set(0, gapCenter + gapSize/2, 0);
+            tunnelGroup.add(topCap);
+
+            const bottomCap = new THREE.Mesh(capGeo, capMat);
+            bottomCap.position.set(0, gapCenter - gapSize/2, 0);
+            tunnelGroup.add(bottomCap);
+
+            tunnelGroup.userData = { scored: false, gapCenter: gapCenter, gapSize: gapSize };
+
+            return tunnelGroup;
+        }
+
+        function createNoiseTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#4a6741';
+            ctx.fillRect(0, 0, 64, 64);
+            for (let i = 0; i < 200; i++) {
+                ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.2})`;
+                ctx.fillRect(Math.random() * 64, Math.random() * 64, 2, 2);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            return texture;
+        }
+
+        function createParticle(x, y, z) {
+            const geo = new THREE.SphereGeometry(0.05, 4, 4);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xFFD700, transparent: true });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, y, z);
+            return {
+                mesh: mesh,
+                velocity: new THREE.Vector3((Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1, 0),
+                life: 1.0
+            };
+        }
+
+        function spawnParticles(x, y, z, count = 5) {
+            for (let i = 0; i < count; i++) {
+                const p = createParticle(x, y, z);
+                particles.push(p);
+                scene.add(p.mesh);
+            }
+        }
+
+        function jump() {
+            if (gameState === 'playing') {
+                birdVelocity = jumpStrength;
+                spawnParticles(bird.position.x, bird.position.y - 0.3, bird.position.z, 3);
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                if (gameState === 'start') startGame();
+                else if (gameState === 'gameover') resetGame();
+                else jump();
+            }
+        });
+
+        document.addEventListener('mousedown', (e) => {
+            if (e.target.tagName !== 'BUTTON') {
+                if (gameState === 'playing') jump();
+            }
+        });
+
+        document.addEventListener('touchstart', (e) => {
+            if (e.target.tagName !== 'BUTTON') {
+                e.preventDefault();
+                if (gameState === 'playing') jump();
+            }
+        }, { passive: false });
+
+        const scoreDisplay = document.getElementById('score-display');
+        const startScreen = document.getElementById('start-screen');
+        const gameOverScreen = document.getElementById('game-over-screen');
+        const finalScore = document.getElementById('final-score');
+        const highScoreDisplay = document.getElementById('high-score');
+        const startBtn = document.getElementById('start-btn');
+        const restartBtn = document.getElementById('restart-btn');
+
+        startBtn.addEventListener('click', startGame);
+        restartBtn.addEventListener('click', resetGame);
+
+        function startGame() {
+            gameState = 'playing';
+            startScreen.style.display = 'none';
+            gameOverScreen.style.display = 'none';
+            score = 0;
+            scoreDisplay.textContent = '0';
+            birdVelocity = 0;
+            bird.position.set(0, 0, 0);
+            bird.rotation.set(0, 0, 0);
+
+            tunnels.forEach(t => scene.remove(t));
+            tunnels = [];
+
+            particles.forEach(p => scene.remove(p.mesh));
+            particles = [];
+
+            spawnTimer = 0;
+        }
+
+        function gameOver() {
+            gameState = 'gameover';
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('parrotHighScore', highScore.toString());
+            }
+            finalScore.textContent = `Score: ${score}`;
+            highScoreDisplay.textContent = `Best: ${highScore}`;
+            gameOverScreen.style.display = 'flex';
+        }
+
+        function resetGame() {
+            startGame();
+        }
+
+        function checkCollision() {
+            const birdPos = bird.position;
+            const birdRadius = 0.5;
+
+            for (const tunnel of tunnels) {
+                const gc = tunnel.userData.gapCenter;
+                const gs = tunnel.userData.gapSize;
+                const tz = tunnel.position.z;
+
+                if (Math.abs(tz - birdPos.z) < 1.0) {
+                    if (birdPos.y + birdRadius >= gc + gs/2 || birdPos.y - birdRadius <= gc - gs/2) {
+                        return true;
+                    }
+                }
+            }
+
+            if (birdPos.y - birdRadius <= -7.5 || birdPos.y + birdRadius >= 7.5) {
+                return true;
+            }
+
+            return false;
+        }
+
+        let time = 0;
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.05;
+
+            if (gameState === 'playing') {
+                birdVelocity -= gravity;
+                bird.position.y += birdVelocity;
+
+                bird.rotation.z = Math.max(-0.5, Math.min(0.5, -birdVelocity * 2));
+                bird.rotation.x = Math.sin(time * 3) * 0.1;
+
+                const leftWing = bird.getObjectByName('leftWing');
+                const rightWing = bird.getObjectByName('rightWing');
+                if (leftWing && rightWing) {
+                    const flapAngle = Math.sin(time * 10) * 0.5;
+                    leftWing.rotation.z = flapAngle;
+                    rightWing.rotation.z = -flapAngle;
+                }
+
+                spawnTimer++;
+                if (spawnTimer >= spawnInterval) {
+                    spawnTimer = 0;
+                    const tunnel = createTunnel();
+                    tunnel.position.z = -35;
+                    scene.add(tunnel);
+                    tunnels.push(tunnel);
+                }
+
+                for (let i = tunnels.length - 1; i >= 0; i--) {
+                    const tunnel = tunnels[i];
+                    tunnel.position.z += speed;
+
+                    if (!tunnel.userData.scored && tunnel.position.z > bird.position.z) {
+                        tunnel.userData.scored = true;
+                        score++;
+                        scoreDisplay.textContent = score;
+                        scoreDisplay.style.transform = 'translateX(-50%) scale(1.3)';
+                        setTimeout(() => {
+                            scoreDisplay.style.transform = 'translateX(-50%) scale(1)';
+                        }, 150);
+                    }
+
+                    if (tunnel.position.z > 15) {
+                        scene.remove(tunnel);
+                        tunnels.splice(i, 1);
+                    }
+                }
+
+                if (checkCollision()) {
+                    spawnParticles(bird.position.x, bird.position.y, bird.position.z, 20);
+                    gameOver();
+                }
+            } else if (gameState === 'start') {
+                bird.position.y = Math.sin(time) * 0.3;
+                bird.rotation.y = Math.sin(time * 0.5) * 0.2;
+                const leftWing = bird.getObjectByName('leftWing');
+                const rightWing = bird.getObjectByName('rightWing');
+                if (leftWing && rightWing) {
+                    leftWing.rotation.z = Math.sin(time * 3) * 0.3;
+                    rightWing.rotation.z = -Math.sin(time * 3) * 0.3;
+                }
+            }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.mesh.position.add(p.velocity);
+                p.life -= 0.02;
+                p.mesh.material.opacity = p.life;
+                if (p.life <= 0) {
+                    scene.remove(p.mesh);
+                    particles.splice(i, 1);
+                }
+            }
+
+            scene.children.forEach(child => {
+                if (child.type === 'Group' && child !== bird && !tunnels.includes(child)) {
+                    child.position.x += 0.01;
+                    if (child.position.x > 20) child.position.x = -20;
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
